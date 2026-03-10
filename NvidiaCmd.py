@@ -211,11 +211,17 @@ class SW_CMD:
         r = self.parse_lane_powers(output[0])
         return r
 
+    def GetInfo(self, port:int):
+        ethernet = (port - 1)*8
+        sCmd = f'show interface trans eeprom -d Ethernet{ethernet}'
+        output = self._ssh.send(sCmd, 2)
+        return output
+
     def GetHostMediaPortBER(self, port: int):
         first_ethernet = (port - 1)*8
         sCmd = f"sudo config int trans dom Ethernet{first_ethernet} enable"
         r = self._ssh.send(sCmd, 2)
-        sCmd = f" sonic-db-cli -n '' STATE_DB hgetall 'TRANSCEIVER_VDM_REAL_VALUE|Ethernet{first_ethernet}'"
+        sCmd = f"sonic-db-cli -n '' STATE_DB hgetall 'TRANSCEIVER_VDM_REAL_VALUE|Ethernet{first_ethernet}'"
         r = self._ssh.send(sCmd, 2)
         if len(r) >= 2:
             r = r[0]
@@ -228,12 +234,40 @@ class SW_CMD:
                     print(f'{item}: {d[item]}')
                 data = {}
                 for lane in range (1, 9):
-                    host_item = f'prefec_ber_curr_host_input{lane}'
-                    media_item = f'prefec_ber_curr_media_input{lane}'
+                    #host_item = f'prefec_ber_curr_host_input{lane}'
+                    #media_item = f'prefec_ber_curr_media_input{lane}'
+                    host_item = f'prefec_ber_avg_host_input{lane}'
+                    media_item = f'prefec_ber_avg_media_input{lane}'
                     data[lane] = [d[host_item],d[media_item]]
                 return {'result': True, 'data':data}
         return {'result': False}
-      
+        
+    def GetPortInfo(self,port):
+        port_info = self.GetInfo(port)
+        logger.info(f"Port Info for top {port}")
+        info = {}
+        try:
+            lst_info = port_info[0].splitlines()
+            logger.info(port_info[0])
+            logger.info(lst_info)
+            for line in lst_info:
+                logger.info(line)
+                if line.find("Active Firmware") > 0:
+                    fw = line.split(":")[1]
+                    logger.info(f"Firmware = {fw}")
+                    info["fw"] = fw
+                    break
+            for line in lst_info:
+                if line.find("Vendor SN") > 0:
+                    sn = line.split(":")[1]
+                    logger.info(f"SN = {sn}")
+                    info["sn"] = sn
+                    break
+            return [True, info]
+        except:
+            logger.exception("Error reading port {port} sn and fw info")
+            return [False]
+
     def parse_fec_ber(self, equipment_response: list, ethernet: int):
     #def parse_equipment_output(equipment_response):
         """
@@ -414,16 +448,16 @@ class SW_CMD:
         r1 = CMD.GetHostMediaPortBER(port)
         dt = time.time()-st
         st = time.time()
-        ethernet = (port - 1)*8
         for lane in range(1,9):
+            ethernet = (port - 1)*8 + lane - 1
             d[lane]['tp3_RXPwr'] = r0[0][lane-1]
             d[lane]['tp2_TXPwr'] = r0[1][lane-1]
             if r1['result']:
                 d[lane]['host_media_ber'] = r1['data'][lane]
                 try:
                     ber = r1['data'][lane]
-                    ber0 = f'{float(ber[0]):.4e}'
-                    ber1 = f'{float(ber[1]):.4e}'
+                    ber0 = ber[0] #f'{float(ber[0]):.4e}'
+                    ber1 = ber[1] #f'{float(ber[1]):.4e}'
                     d[lane]['host_media_ber'] = f'{ber0};{ber1}'
                 except:
                     logger.exception("error formatting ber")
@@ -441,6 +475,10 @@ class SW_CMD:
             #st = time.time()
             #d[lane]['tp0'] = CMD.GetTP0(ethernet)
             d[lane]['tp0'] = [0, 0, 0, 0, 0, 0]
+            d[lane]['tp4'] = CMD.GetTP4(ethernet)
+            dt = time.time()-st
+            st = time.time()
+            print(f'tp4 time = {dt} seconds')
             dt = time.time()-st
             st = time.time()
         dt = time.time()-stt
