@@ -35,6 +35,7 @@ import csv
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 import tkinter.font as tkfont
+import numpy as np
 import switch_config
 from Switch import Switch
 from logger import get_logger
@@ -42,7 +43,7 @@ logger = get_logger()
 
 SIM = False
 SIM_PORT_TIME = 3
-
+SIM_BIN_CROSS_THRESHOLD = False
 try:
     from PIL import Image, ImageTk  # type: ignore
 except ImportError:  # pragma: no cover - handled at runtime
@@ -61,7 +62,8 @@ WINDOW_HEIGHT = 1000
 DEFAULT_SWITCH_IP = switch_config.switch_ip_list[0]#"10.74.181.250"
 DEFAULT_SWITCH_CHOICES = switch_config.switch_ip_list
 DEFAULT_PORT_CHOICES =switch_config.switch_port_list
-
+SWITCH_TYPE = switch_config.switch_type
+BIN5_10_THRESHOLD_RATIO = switch_config.bin5_10_threshold_ratio
 LANE_COUNT = 8
 BLINK_INTERVAL = 500
 
@@ -129,6 +131,13 @@ class SectionRefreshResult:
     lane_values: Dict[int, Dict[str, str]]
     charts: Dict[Tuple[int, str], Optional["Image.Image"]]
 
+def format_float_or_exponent(num):
+    f = float(num)
+    if f > 0:
+        s = f"{f:.4e}"
+    else:
+        s = f"{f}"
+    return s
 
 class SwitchLaneResult:
     def __init__(self, value):
@@ -138,16 +147,25 @@ class SwitchLaneResult:
         # 'tp2_TXportPwr': 2.326, 
         # 'tp0': [0, 3, -20, 40, 0, 63], 
         # 'tp4': [0, 0, 2], 
-        # 'host_media_ber': ['0.0', '0.0']}
-        logger.info('SwitchLaneResult_ex value =')
+        # 'host_media_ber': '0.0;0.0'}
+        logger.info('SwitchLaneResult value =')
         logger.info(value)
         tp5 = value['tp5_0'].split(";")
         logger.info(f'SwitchLaneResult_ex value tp5 ={tp5}')
         self.tp5_pre_fec_ber = tp5[0] 
         self.tp5_post_fec_ber = tp5[1] 
         self.tp0_tap = value['tp0']
-        self.tp1_host_ber = value['host_media_ber'][0]
-        self.tp3_media_ber = value['host_media_ber'][1]
+        host_media_ber = value['host_media_ber'].split(";")
+        #self.tp1_host_ber = host_media_ber[0]
+        #self.tp3_media_ber = host_media_ber[1]
+        self.tp1_host_ber = format_float_or_exponent(host_media_ber[0]) #f"{float(host_media_ber[0]):4e}"
+        self.tp3_media_ber = format_float_or_exponent(host_media_ber[1]) # f"{float(host_media_ber[1]):.4e}"
+        logger.info("value['host_media_ber']")
+        logger.info(value['host_media_ber'])
+        logger.info('self.tp1_host_ber')
+        logger.info(self.tp1_host_ber)
+        logger.info('self.tp3_media_ber')
+        logger.info(self.tp3_media_ber)
         self.tp4_tap = value['tp4']
         self.txp_dBm = value['tp2_TXPwr']
         self.rxp_dBm = value['tp3_RXPwr']
@@ -157,22 +175,26 @@ class SwitchLaneResult:
 # slight adjustments are needed, but they already align well with the supplied
 # reference imagery.
 LANE_TEXT_COORDS: Dict[str, LaneCoordinate] = {
-    "top_pre_fec_ber": LaneCoordinate(250, 465, anchor="w"),
-    "top_post_fec_ber": LaneCoordinate(250, 503, anchor="w"),
+    "top_ethernet": LaneCoordinate(250, 71, anchor="w"),
+    "top_lane": LaneCoordinate(100, 71, anchor="w"),
+    "top_pre_fec_ber": LaneCoordinate(240, 468, anchor="w"),
+    "top_post_fec_ber": LaneCoordinate(240, 506, anchor="w"),
     "top_tp0_tap": LaneCoordinate(20, 540, anchor="w"),
     "top_tp1_host_ber": LaneCoordinate(20, 675, anchor="w"),
     "top_tp4_tap": LaneCoordinate(240.78, 675, anchor="w"),
-    "top_tp3_media_ber": LaneCoordinate(250, 710, anchor="w"),
+    "top_tp3_media_ber": LaneCoordinate(239, 710, anchor="w"),
     "top_txp": LaneCoordinate(97, 820, anchor="center"),
     "top_rxp": LaneCoordinate(270, 820, anchor="center"),
     "bottom_txp": LaneCoordinate(97, 905, anchor="center"),
     "bottom_rxp": LaneCoordinate(270, 905, anchor="center"),
     "bottom_tp3_media_ber": LaneCoordinate(20, 1015, anchor="w"),
     "bottom_tp4_tap": LaneCoordinate(20, 1050, anchor="w"),
-    "bottom_tp1_host_ber": LaneCoordinate(262, 1050, anchor="w"),
+    "bottom_tp1_host_ber": LaneCoordinate(239, 1050, anchor="w"),
     "bottom_tp0_tap": LaneCoordinate(210, 1190, anchor="center"),
-    "bottom_post_fec_ber": LaneCoordinate(130, 1230, anchor="w"),
-    "bottom_pre_fec_ber": LaneCoordinate(130, 1267, anchor="w"),
+    "bottom_pre_fec_ber": LaneCoordinate(130, 1224, anchor="w"),
+    "bottom_post_fec_ber": LaneCoordinate(130, 1261, anchor="w"),
+    "bottom_lane": LaneCoordinate(100, 1288, anchor="w"),
+    "bottom_ethernet": LaneCoordinate(250, 1288, anchor="w"),
 }
 
 LANE_CHARTS: Dict[str, LaneChartBounds] = {
@@ -194,7 +216,7 @@ def get_datafile_with_timestamp(data_fn = "data_log", data_folder = "data"):
     data_path = os.path.join(data_path, filename)
     return data_path
 
-
+    
 class SwitchEquipmentGUI:
     """GUI that mirrors the filled mock-up using explicit coordinates."""
     def __init__(self, master: Optional[tk.Tk] = None) -> None:
@@ -269,7 +291,7 @@ class SwitchEquipmentGUI:
 
         # start periodic task
         self.section_being_read = ""
-
+        self.hardware_state = "connecting to switch"
         # background reader control
         self._stop_hw_reader = threading.Event()
 
@@ -287,29 +309,52 @@ class SwitchEquipmentGUI:
 
         self.update_start_time = time.time()
         self.connect_done = self.connect()
-
-
+        self.port_sn = [None, None]
+        self.port_fw = [None, None]
+        self.check_info_done = [None]*4
+        self.check_port_info()
+        self.FEC_tail_0 = {"top":{}, "bottom":{}}
+        self.FEC_tail = {"top":{}, "bottom":{}}
+        self.FEC_tail_start_time = {"top":None, "bottom":None}
+        self.FEC_tail_duration = {"top":None, "bottom":None}
+        for lane in range(8):
+            self.FEC_tail_0["top"][lane] = None
+            self.FEC_tail_0["bottom"][lane] = None
+            self.FEC_tail["top"][lane] = None
+            self.FEC_tail["bottom"][lane] = None
         self._hw_thread = threading.Thread(target=self._hardware_reader_loop, daemon=True)
         self._hw_thread.start()
         self._schedule_check()
         self.button_sync = False
+        
 
     def _schedule_check(self):
         #    try:
+                self.update_switch_message()
+                if self.FEC_tail_duration["top"]:
+                    fec_time = self.format_FEC_time(self.FEC_tail_duration["top"])                       
+                    self.top_duration_label.config(text=fec_time,font=self.bold_header_font) 
+                if self.FEC_tail_duration["bottom"]:
+                    fec_time = self.format_FEC_time(self.FEC_tail_duration["bottom"])                       
+                    self.bottom_duration_label.config(text=fec_time,font=self.bold_header_font) 
+                
+                #if self.switch_ready:
+                #    self.check_blocking_other_button()
+                #self.root.after(500, self._schedule_check)  # run every 1000 ms
                 read_port = "None"
                 if self.section_being_read == "top":
                     read_port = (self.top_port_var.get() or "").strip()
-                    self.port_status_label.config(text=f"port read = {read_port}",font=self.bold_header_font)
+                    #self.port_status_label.config(text=f"port read = {read_port}",font=self.bold_header_font)
                     self.start_blink()
                 elif self.section_being_read == "bottom":
                     read_port = (self.bottom_port_var.get() or "").strip()
-                    self.port_status_label.config(text=f"port read = {read_port}",font=self.bold_header_font)
+                    #self.port_status_label.config(text=f"port read = {read_port}",font=self.bold_header_font)
                     self.start_blink()
                 else:
-                    self.port_status_label.config(text="port read = None",font=self.bold_header_font)
+                    #self.port_status_label.config(text="port read = None",font=self.bold_header_font)
                     self.stop_blink()
                 if self.switch_ready:
-                    self.update_switch_message()
+                    #self.update_switch_message()
                     self.check_blocking_other_button()
                 self.root.after(1000, self._schedule_check)  # run every 1000 ms
                 #logger.info(f"checking if port {read_port} being read")
@@ -317,6 +362,87 @@ class SwitchEquipmentGUI:
         #    except:
         #        logger.exception("error setup periodic harware check")
 
+    # def _schedule_check(self):
+        # #    try:
+                # read_port = "None"
+                # if self.section_being_read == "top":
+                    # read_port = (self.top_port_var.get() or "").strip()
+                    # self.port_status_label.config(text=f"port read = {read_port}",font=self.bold_header_font)
+                    # self.start_blink()
+                # elif self.section_being_read == "bottom":
+                    # read_port = (self.bottom_port_var.get() or "").strip()
+                    # self.port_status_label.config(text=f"port read = {read_port}",font=self.bold_header_font)
+                    # self.start_blink()
+                # else:
+                    # self.port_status_label.config(text="port read = None",font=self.bold_header_font)
+                    # self.stop_blink()
+                # if self.switch_ready:
+                    # self.update_switch_message()
+                    # self.check_blocking_other_button()
+                # self.root.after(1000, self._schedule_check)  # run every 1000 ms
+                # #logger.info(f"checking if port {read_port} being read")
+                # #
+        # #    except:
+        # #        logger.exception("error setup periodic harware check")
+        
+
+    def format_FEC_time(self, num):
+        if num < 60:
+            s = f"FEC time(second)={num:.2f}"
+        elif num < 3600:
+            minute = num / 60
+            s = f"FEC time(minute)={minute:.2f}"
+        elif num < 3600*24:
+            hour = num / 3600
+            s = f"FEC time(hour)={hour:.2f}"
+        else:
+            day = num / (3600*24)
+            s = f"FEC time(day)={day:.2f}"
+        return s
+
+    def check_port_info(self):
+        if self.switch_ready:
+            if self.port_fw[0]:
+                try:
+                    s = f"FW version = {self.port_fw[0]}"
+                    logger.info(s)
+                    self.top_fw_version_label.config(text=s,font=self.bold_header_font)
+                    self.check_info_done[0] = True
+                except:
+                    logger.exception(f"error FW version = {self.port_fw[0]}")
+            if self.port_sn[0]:
+                try:
+                    s = f"SN = {self.port_sn[0]}"
+                    logger.info(s)
+                    self.top_SN_label.config(text=s,font=self.bold_header_font)
+                    self.check_info_done[1] = True
+                except:
+                    logger.exception(f"error FW version = {self.port_fw[0]}")
+
+            if self.port_fw[1]:
+                try:
+                    s = f"FW version = {self.port_fw[1]}"
+                    logger.info(s)
+                    self.bottom_fw_version_label.config(text=s,font=self.bold_header_font)
+                    self.check_info_done[2] = True
+                except:
+                    logger.exception(f"error FW version = {self.port_fw[0]}")
+            if self.port_sn[1]:
+                try:
+                    s = f"SN = {self.port_sn[1]}"
+                    logger.info(s)
+                    self.bottom_SN_label.config(text=s,font=self.bold_header_font)
+                    self.check_info_done[3] = True
+                except:
+                    logger.exception(f"error FW version = {self.port_fw[0]}")
+            b = True
+            for b1 in self.check_info_done:
+                b = b and b1
+            if b:
+                logger.info(f"self.check_info_done {self.check_info_done}")
+                return
+        self.root.after(300, self.check_port_info)  # run every 1000 ms
+        
     def check_blocking_other_button(self):
         #try:
             if self.update_data_once["top"] or self.update_data_once["bottom"]:
@@ -371,20 +497,57 @@ class SwitchEquipmentGUI:
         logger.info(f'self.connect_done = {self.connect_done}')
         logger.info("switch connected")
         logger.info("waiting for port selection")
+        self.hardware_state = "waiting for port selection"
         while not (self.switch_ready):
             if self.connect_done:
                 port_configure = self._both_sections_configured()
                 if port_configure:
                     top_port = (self.top_port_var.get() or "").strip()
                     bottom_port = (self.bottom_port_var.get() or "").strip()
-                    self.switch_ready = True
-                    logger.info("done waiting for port, ready to read switch")
                     break
             time.sleep(5)
         logger.info("ports selected, ready to update")
         logger.info(f'self.switch_ready = {self.switch_ready}')
         logger.info(f'self.connect_done = {self.connect_done}')
-            
+        if SWITCH_TYPE == "NVIDIA":
+            self.hardware_state = "reading top port info"
+        else:
+            self.hardware_state = "reading top port info and first FEC histogram"
+        portS = (self.top_port_var.get() or "").strip()
+        port = int(portS)    
+        if port:                            
+            r = self.switch.CMD.GetPortInfo(port)
+            if r[0]:
+                self.port_sn[0] = r[1]["sn"]
+                self.port_fw[0] = r[1]["fw"]
+            self.FEC_tail_start_time["top"] = time.time()
+            for lane in range(8):
+                if SWITCH_TYPE == "NVIDIA":
+                    self.FEC_tail_0["top"][lane] = [0] * 16
+                else:
+                    ethernet = (port -1) * 8 + lane
+                    self.FEC_tail_0["top"][lane] = self.switch.CMD.GetFECHistogram(ethernet)
+        if SWITCH_TYPE == "NVIDIA":
+            self.hardware_state = "reading bottom port info"
+        else:
+            self.hardware_state = "reading bottom port info and first FEC histogram"
+        portS = (self.bottom_port_var.get() or "").strip()
+        port = int(portS)    
+        if port:                            
+            r = self.switch.CMD.GetPortInfo(port)
+            if r[0]:
+                self.port_sn[1] = r[1]["sn"]           
+                self.port_fw[1] = r[1]["fw"]
+            self.FEC_tail_start_time["bottom"] = time.time()
+            for lane in range(8):
+                if SWITCH_TYPE == "NVIDIA":
+                    self.FEC_tail_0["bottom"][lane] = [0] * 16
+                else:
+                    ethernet = (port -1) * 8 + lane
+                    self.FEC_tail_0["bottom"][lane] = self.switch.CMD.GetFECHistogram(ethernet)
+        self.switch_ready = True
+        self.hardware_state = "switch ready"
+        logger.info("done waiting for port, ready to read switch")
         while not self._stop_hw_reader.is_set():
             if self.update_forever:
                 self.update_one_set()
@@ -414,26 +577,48 @@ class SwitchEquipmentGUI:
                     else:
                         if section == "top":
                             portS = (self.top_port_var.get() or "").strip()
+                            port = int(portS)    
+                            sn = self.port_sn[0]
+                            fw = self.port_fw[0]
                         else:
                             portS = (self.bottom_port_var.get() or "").strip()
-                        port = int(portS)    
-                        logger.info("port")  
+                            port = int(portS)    
+                            sn = self.port_sn[1]
+                            fw = self.port_fw[1]
                         if port:                            
                             logger.info("read data")  
+                            self.hardware_state = f"reading port {port}"
                             section_values = self.switch.CMD.Get_all_lanes(port)
                             # Publish latest data + mark availability atomically.
+                            logger.info(f"section_values port {port}")
+                            logger.info(section_values)
                             with self._refresh_lock:
                                 self.data_list[section] = section_values
                                 self.new_data_available[section] = True
-
                             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            self.FEC_tail_duration[section] =  time.time() - self.FEC_tail_start_time[section]
                             if self.log_data:
                                 for lane in range(8):
                                     lane_data = self.data_list[section][lane+1]
+                                    logger.info(f"lane_data for lane {lane}")
+                                    logger.info(lane_data)
+                                    logger.info(f"lane_data['tp5_1']")
+                                    logger.info(lane_data['tp5_1'])
+                                    if not SWITCH_TYPE == "NVIDIA":
+                                        logger.info("Process Arista")
+                                        self.compute_tail(section, lane, lane_data['tp5_1'])
+                                    else:
+                                        logger.info("Process NVIDIA")
+                                        self.FEC_tail[section][lane] = lane_data['tp5_1']
+                                    logger.info(f"self.FEC_tail_0[section][lane]")
+                                    logger.info(self.FEC_tail_0[section][lane])
+                                    logger.info(f"self.FEC_tail[section][lane]")
+                                    logger.info(self.FEC_tail[section][lane])
                                     try:
-                                        self.save_lane_data_to_csv(port, lane+1, lane_data, self.data_log_file, timestamp)
+                                        self.save_lane_data_to_csv(sn, fw, port, lane+1, lane_data, self.FEC_tail[section][lane], self.FEC_tail_duration[section],self.data_log_file, timestamp)
                                     except:
                                         logger.exception("Failed to save_lane_data_to_csv = %r", lane_data)
+                            self.hardware_state = "switch ready"
                         self.update_data_once[section] = False
                     # If auto-refresh is on, refresh this section immediately.
                     if self.auto_refresh_enabled:
@@ -446,6 +631,20 @@ class SwitchEquipmentGUI:
                 # Keep the loop alive; report to console for now.
                 logger.info("HW read error:", e)
     
+    def compute_tail(self, section, lane, tail):
+        logger.info(f"compute_tail section {section}, lane {lane}")
+        logger.info(f"next setup for section {section}, lane {lane}")
+        logger.info("tail")
+        logger.info(tail)
+        self.FEC_tail[section][lane] = [x for x in tail]
+        for i, (x , y) in enumerate(zip(tail, self.FEC_tail_0[section][lane])):
+            self.FEC_tail[section][lane][i] = x - y
+        logger.info("self.FEC_tail[section][lane]")
+        logger.info(self.FEC_tail[section][lane])
+        logger.info("self.FEC_tail_0[section][lane]")
+        logger.info(self.FEC_tail_0[section][lane])
+        logger.info(f"compute_tail section {section}, lane {lane} done")
+        
     def connect(self):
         switch_IP = self.top_switch_var.get()
         try:
@@ -470,13 +669,14 @@ class SwitchEquipmentGUI:
     # Rendering helpers                                                   #
     # ------------------------------------------------------------------ #
     def _draw_background(self) -> None:
-        background_path = Path(__file__).with_name("Background_Picture.png")
+        #background_path = Path(__file__).with_name("Background_Picture.png")
+        background_path = Path(__file__).with_name("Background_Picture_update.png")
         if Image is None or ImageTk is None:
             self.canvas.configure(background="#f5f5f5")
             self.canvas.create_text(
                 WINDOW_WIDTH / 2,
                 WINDOW_HEIGHT / 2,
-                text="Install Pillow to display Background_Picture.png",
+                text=f"Install Pillow to display {background_path}", # Background_Picture.png",
                 fill="#aa0000",
                 font=("Segoe UI", 14, "bold"),
             )
@@ -519,13 +719,18 @@ class SwitchEquipmentGUI:
             return combo
 
         top_switch_center = (320.0 * self.scale_x, 23.0 * self.scale_y)
-        top_port_center = (640.0 * self.scale_x, 23.0 * self.scale_y)
+        #top_port_center = (640.0 * self.scale_x, 23.0 * self.scale_y)
+        top_port_center = (540.0 * self.scale_x, 23.0 * self.scale_y)
         bottom_switch_center = (
             320.0 * self.scale_x,
             (BACKGROUND_HEIGHT - 23.0) * self.scale_y,
         )
+        # bottom_port_center = (
+            # 640.0 * self.scale_x,
+            # (BACKGROUND_HEIGHT - 23.0) * self.scale_y,
+        # )
         bottom_port_center = (
-            640.0 * self.scale_x,
+            540.0 * self.scale_x,
             (BACKGROUND_HEIGHT - 23.0) * self.scale_y,
         )
 
@@ -574,6 +779,87 @@ class SwitchEquipmentGUI:
 
         # Apply bold font to labelframe title
         style.configure("Bold.TLabelframe.Label", font=self.bold_header_font)
+        logger.info(f"top_switch_center y = {top_switch_center[1]}")
+        logger.info(f"bottom_switch_center y = {bottom_switch_center[1]}")
+
+        self.top_SN_label = tb.Label(self.canvas, text="SN = xxxxxxxx", font=("Arial", 12, "bold"))
+
+        button_x = WINDOW_WIDTH - 1450
+        button_y = int(top_switch_center[1]) # 12 #36
+        self.canvas.create_window(
+            button_x,
+            button_y,
+            anchor="center",
+            window=self.top_SN_label,
+            width=190,
+            height=28,
+        )
+
+        self.top_fw_version_label = tb.Label(self.canvas, text="FW version = x.x.x.x", font=("Arial", 12, "bold"))
+
+        button_x = button_x + 180
+        button_y = int(top_switch_center[1])#12 #36
+        self.canvas.create_window(
+            button_x,
+            button_y,
+            anchor="center",
+            window=self.top_fw_version_label,
+            width=190,
+            height=28,
+        )
+
+        # Duration Label
+        self.top_duration_label = tb.Label(self.canvas, text="", font=self.bold_header_font)
+        #self.status_label.pack()
+        button_x = button_x + 160
+        button_y = int(top_switch_center[1])#12 #36
+        self.canvas.create_window(
+            button_x,
+            button_y,
+            anchor="center",
+            window=self.top_duration_label,
+            width=200,
+            height=28,
+        )
+
+        self.bottom_SN_label = tb.Label(self.canvas, text="SN = xxxxxxxx", font=("Arial", 12, "bold"))
+
+        button_x = WINDOW_WIDTH - 1450
+        button_y = int(bottom_switch_center[1]) + 2#12 #36
+        self.canvas.create_window(
+            button_x,
+            button_y,
+            anchor="center",
+            window=self.bottom_SN_label,
+            width=190,
+            height=28,
+        )
+
+        self.bottom_fw_version_label = tb.Label(self.canvas, text="FW version = x.x.x.x", font=("Arial", 12, "bold"))
+
+        button_x = button_x + 180
+        button_y = int(bottom_switch_center[1]) + 2#12 #36
+        self.canvas.create_window(
+            button_x,
+            button_y,
+            anchor="center",
+            window=self.bottom_fw_version_label,
+            width=190,
+            height=28,
+        )
+
+        self.bottom_duration_label = tb.Label(self.canvas, text="", font=self.bold_header_font)
+        button_x = button_x + 160
+        button_y = int(bottom_switch_center[1]) + 2#12 #36
+        self.canvas.create_window(
+            button_x,
+            button_y,
+            anchor="center",
+            window=self.bottom_duration_label,
+            width=200,
+            height=28,
+        )
+
 
         self.auto_refresh_enabled = False
 
@@ -595,7 +881,7 @@ class SwitchEquipmentGUI:
             style="AutoOff.TButton"
             )
 
-        button_x = WINDOW_WIDTH - 1200
+        button_x = WINDOW_WIDTH - 850
         button_y = 12 #36
         self.canvas.create_window(
             button_x,
@@ -614,7 +900,7 @@ class SwitchEquipmentGUI:
             width=12,
             style="Bold.TButton"
         )
-        button_x = button_x + 200
+        button_x = button_x + 170
         button_y = 12 #36
         self.canvas.create_window(
             button_x,
@@ -629,7 +915,7 @@ class SwitchEquipmentGUI:
         self._update_refresh_controls_enabled_state()
 
         indicator_radius = 10
-        indicator_center_x = button_x + 200
+        indicator_center_x = button_x + 170
         indicator_center_y = button_y
         self._indicator_item = self.canvas.create_oval(
             indicator_center_x - indicator_radius,
@@ -639,52 +925,62 @@ class SwitchEquipmentGUI:
             fill="#2ecc71",
             outline="",
         )
+        self._indicator_item_save = self._indicator_item 
         
-        self.port_status_label = tb.Label(self.canvas, text="port read = None", font=("Arial", 12, "bold"))
+        # self.port_status_label = tb.Label(self.canvas, text="port read = None", font=("Arial", 12, "bold"))
 
-        button_x = button_x + 400
-        button_y = 12 #36
-        self.canvas.create_window(
-            button_x,
-            button_y,
-            anchor="center",
-            window=self.port_status_label,
-            width=140,
-            height=28,
-        )
+        # button_x = button_x + 340
+        # button_y = 12 #36
+        # self.canvas.create_window(
+            # button_x,
+            # button_y,
+            # anchor="center",
+            # window=self.port_status_label,
+            # width=140,
+            # height=28,
+        # )
 
         # Status Label
         self.status_label = tb.Label(self.canvas, text="wait for port selection", font=self.bold_header_font)
         #self.status_label.pack()
-        button_x = button_x + 400
+        button_x = button_x + 400 # 250
         button_y = 12 #36
         self.canvas.create_window(
             button_x,
             button_y,
             anchor="center",
             window=self.status_label,
-            width=200,
+            width=420,
             height=28,
         )
+
        
  
     def update_switch_message(self):
         self.log_data = True
-        if self.switch_ready:
-            #self.status_label = tb.Label(self.canvas, text="", font=self.bold_header_font)
-            if self.update_forever:
-                 message = "auto refresh  = ON"
-                 self.status_label.config(text=message,font=self.bold_header_font)
-            elif self.update_data_once["top"] or self.update_data_once["bottom"]:
-                 message = "refresh once"
-                 self.status_label.config(text=message,font=self.bold_header_font)
-            elif len(self.section_being_read) > 0:
-                 message = "still reading switch"
-                 self.status_label.config(text=message,font=self.bold_header_font)
-            elif len(self.section_being_read) == 0:
-                 message = "switch is ready"
-                 self.status_label.config(text=message,font=self.bold_header_font)
+        if self.hardware_state.find("reading ") >= 0:
+            self.status_label.config(text=self.hardware_state,font=self.bold_header_font)
+        if not self.hardware_state == "switch ready":
+            self.status_label.config(text=self.hardware_state,font=self.bold_header_font)
+        elif len(self.section_being_read) == 0:
+            message = "switch is ready"
+            self.status_label.config(text=message,font=self.bold_header_font)       
 
+        if self.switch_ready:
+            if self.update_forever:
+                # message = "auto refresh  = ON"
+                # self.status_label.config(text=message,font=self.bold_header_font)
+                self.start_blink()
+            elif self.update_data_once["top"] or self.update_data_once["bottom"]:
+                # message = "refresh once"
+                # self.status_label.config(text=message,font=self.bold_header_font)
+                self.start_blink()
+            elif len(self.section_being_read) > 0:
+                # self.status_label.config(text=self.hardware_state,font=self.bold_header_font)
+                # self.top_duration_label.config(text="") 
+                # self.bottom_duration_label.config(text="") 
+                self.start_blink()
+        
     def _build_lane_overlays(self) -> None:
         lane_stride = BACKGROUND_WIDTH / LANE_COUNT
         text_font = ("Segoe UI", 12)
@@ -957,8 +1253,13 @@ class SwitchEquipmentGUI:
 
     def do_convert(self, lane_data):
         try:
+            logger.info('do_convert')
             obj = SwitchLaneResult(lane_data)
             logger.info("Converted: %r", obj)
+            logger.info('obj.tp1_host_ber')
+            logger.info(obj.tp1_host_ber)
+            logger.info('obj.tp3_host_ber')
+            logger.info(obj.tp3_media_ber)
             return obj
         except Exception:
             logger.exception("Failed to convert lane_data=%r", lane_data)
@@ -997,8 +1298,10 @@ class SwitchEquipmentGUI:
                     current_port = (self.bottom_port_var.get() or "").strip()
                 demo_value = {}
                 for lane in range(8):
+                    logger.info('self.FEC_tail[section][lane]')
+                    logger.info(self.FEC_tail[section][lane])
                     lane_data = section_data_list[lane+1]
-                    bar_data = lane_data['tp5_1']
+                    bar_data = self.FEC_tail[section][lane]  #lane_data['tp5_1']
                     logger.info(f'lane_data={lane}')
                     logger.info(lane_data)
                     logger.info('bar_data')
@@ -1083,6 +1386,7 @@ class SwitchEquipmentGUI:
         self._indicator_blink_state = not self._indicator_blink_state
         fill = "#ffd60a" if self._indicator_blink_state else "#ffe680"
         self.canvas.itemconfigure(self._indicator_item, fill=fill)
+
         self._indicator_job = self.root.after(BLINK_INTERVAL, self._blink_indicator)
 
     def _stop_indicator_success(self) -> None:
@@ -1115,7 +1419,7 @@ class SwitchEquipmentGUI:
         # set steady green (adjust color as you like)
         if self._indicator_item is not None:
             self.canvas.itemconfigure(self._indicator_item, fill="#00c853")  # e.g. steady green
-
+  
 
     def _handle_refresh_error(self, section: str, exc: Exception) -> None:
         self._indicator_error = True
@@ -1161,10 +1465,17 @@ class SwitchEquipmentGUI:
 
 
     def _value_refresh_top(self, context: RefreshContext, result) -> SectionRefreshResult:
+        logger.info("_value_refresh_top, result")
+        logger.info(result)
         lane_values: Dict[int, Dict[str, str]] = {}
         value = result
+        portS = (self.top_port_var.get() or "").strip()
+        port = int(portS)    
         for lane in range(LANE_COUNT):
+            ethernet = (port - 1) * 8 + lane 
             lane_values[lane] = {
+                "top_ethernet": f"{ethernet}",
+                "top_lane": f"{lane + 1}",
                 "top_pre_fec_ber": f"{value[lane].tp5_pre_fec_ber}",
                 "top_post_fec_ber": f"{value[lane].tp5_post_fec_ber}",
                 "top_tp0_tap": f"{value[lane].tp0_tap}",
@@ -1179,7 +1490,10 @@ class SwitchEquipmentGUI:
     def _value_refresh_bottom(self, context: RefreshContext, result) -> SectionRefreshResult:
         lane_values: Dict[int, Dict[str, str]] = {}
         value = result
+        portS = (self.bottom_port_var.get() or "").strip()
+        port = int(portS)    
         for lane in range(LANE_COUNT):
+            ethernet = (port - 1) * 8 + lane 
             lane_values[lane] = {
                 "bottom_txp": f"{value[lane].txp_dBm}",
                 "bottom_rxp": f"{value[lane].rxp_dBm}",
@@ -1188,7 +1502,9 @@ class SwitchEquipmentGUI:
                 "bottom_tp1_host_ber": f"{value[lane].tp1_host_ber}",
                 "bottom_tp0_tap": f"{value[lane].tp0_tap}",
                 "bottom_post_fec_ber": f"{value[lane].tp5_post_fec_ber}",
-                "bottom_pre_fec_ber": f"{value[lane].tp5_pre_fec_ber}"
+                "bottom_pre_fec_ber": f"{value[lane].tp5_pre_fec_ber}",
+                "bottom_lane": f"{lane + 1}",
+                "bottom_ethernet": f"{ethernet}",
             }
         return SectionRefreshResult(lane_values=lane_values, charts={})
         
@@ -1316,24 +1632,25 @@ class SwitchEquipmentGUI:
         x=10,
         y=10,
         width=250,
-        bar_h=17,
+        bar_h=15, #17,
         gap=1,
-        colors=(
-            "#ff7f0e", "#bcbd22", "#fdbf6f", "#c7c7c7",
-            "#ffd700", "#fb9a99", "#a6cee3", "#bcbd22",  # "#1f78b4",
-            "#b2df8a", "#ffbf00", "#17becf", "#cab2d6",
-            "#ff7f0e", "#ffd700"
-        ),
+        # colors=[
+            # "#bcbd22", "#b2df8a","#bcbd22", "#b2df8a",  
+            # "#bcbd22", "#b2df8a","#bcbd22", "#b2df8a",  
+            # "#bcbd22", "#b2df8a","#bcbd22", "#b2df8a",  
+            # "#bcbd22", "#b2df8a","#bcbd22", "#b2df8a"
+        # ],
+        colors = ["#b2df8a"]*16,
         number_of_bars=12,
         tag="demo_bars",
         clear=True,
         min_nonzero_frac=0.02,
-        min_width_px=8,
+        min_width_px=3, #8,
         text=True,
-        text_left_inset=6,
+        text_left_inset=1, #6,
         text_right_pad=8,
         base_font_family="Arial",
-        base_font_size=8,
+        base_font_size=7,
         base_font_weight="bold",
         vpad=0,
         text_fill="black",
@@ -1341,7 +1658,7 @@ class SwitchEquipmentGUI:
         show_bins=True,
         bin_prefix="BIN",
         bin_font_family="Arial",
-        bin_font_size=8,
+        bin_font_size=7,
         bin_font_weight="normal",
         bin_pad=6,          # space between BIN text and bar start
         bin_fill="black",
@@ -1349,8 +1666,18 @@ class SwitchEquipmentGUI:
         """
         Same as draw_log_bars_cover_text, but with BIN labels drawn to the left
         and the bars automatically shifted right to make room.
+        Clarified on FEC tail color coding with Hock: for the first revision, we'll make it simple:
+        BIN0-4: use green
+        BIN5-10: any non-zero number should make the bar orange
+        BIN11 and above: any non-zero number should make the bar red
         """
-
+        dynamic_threshold = int(values[0]*BIN5_10_THRESHOLD_RATIO)
+        if SIM_BIN_CROSS_THRESHOLD:
+            num_bin_cross_threshold = random.randint(1, 7)
+            for k in range(num_bin_cross_threshold):
+               sim_bin = random.randint(1, 14)
+               sim_bin_offset = random.randint(-dynamic_threshold, dynamic_threshold)
+               values[sim_bin] = dynamic_threshold + sim_bin_offset
         vals = list(values[:number_of_bars])
         if len(vals) < number_of_bars:
             vals += [0] * (number_of_bars - len(vals))
@@ -1398,6 +1725,13 @@ class SwitchEquipmentGUI:
         # Shift bars to the right so BIN labels fit on the left
         x_bar = x + bin_space
         usable_width = max(width - bin_space, 1)
+        n_colors = len(colors)
+        bar_color_list = [colors[i] for i in range(n_colors)] # 2 shades of green
+        for i in range(1,n_colors):
+            if (values[i] > dynamic_threshold) and (i >= 5 and i <= 10):
+                bar_color_list[i] = "#ff7f0e" # orange
+            if (values[i] > 0) and (i >= 11):
+                bar_color_list[i] = COLOR_RED
 
         for i, (v, frac) in enumerate(zip(vals, fracs)):
             if v > 0:
@@ -1419,7 +1753,7 @@ class SwitchEquipmentGUI:
 
             # BIN label to the left of bars
             if show_bins and bin_fnt:
-                bar_color = colors[i % len(colors)]
+                bar_color = bar_color_list[i % n_colors]
                 bin_color = self.darker_color(bar_color, 0.35)
 
                 canvas.create_text(
@@ -1444,7 +1778,7 @@ class SwitchEquipmentGUI:
             # bar rectangle
             canvas.create_rectangle(
                 x_bar, y0, x_bar + w, y1,
-                fill=colors[i % len(colors)],
+                fill=bar_color_list[i % len(colors)],
                 width=0,
                 tags=(tag,),
             )
@@ -1474,64 +1808,68 @@ class SwitchEquipmentGUI:
         rect_id = self.chart_items[(lane, position)]
         bounds = LANE_CHARTS[position]
         offset_x = lane * (BACKGROUND_WIDTH / LANE_COUNT) - 150
-        offset_y = -186 #was -160
+        offset_y = -164 #was -160
         canvas_x = (offset_x + bounds.left + bounds.width / 2) * self.scale_x
         canvas_y = (offset_y + bounds.top + bounds.height / 2) * self.scale_y
         canvas = self.canvas
        
-        lane_width = bounds.width * self.scale_x * 0.9
+        lane_width = bounds.width * self.scale_x * 1.2 #0.9
         left_x = canvas_x - lane_width / 2
 
-        # self.draw_log_bars_cover_text(canvas, values,
-                                 # x=canvas_x, y=canvas_y, width=lane_width,
-                                 # tag=f"{position}_bars_{lane}",
-                                 # number_of_bars=14,
-                                # gap=0,
-                                # vpad=0,
-                             # clear=True)
-        # self.draw_log_bars_cover_text_with_bins(
-            # canvas, values,
-            # x=canvas_x, y=canvas_y, width=lane_width,
-            # tag=f"{position}_bars_{lane}",
-            # number_of_bars=14,
-            # gap=0,
-            # vpad=0,
-            # clear=True,
-            # show_bins=True,
-        # )                  
-        self.draw_log_bars_cover_text_with_bins(
-            canvas, values,
-            x=canvas_x, y=canvas_y, width=lane_width,
-            tag=f"{position}_bars_{lane}",
-            number_of_bars=15,
-            gap=0,
-            vpad=0,
-            clear=True,
-            show_bins=True,
-            bar_h=14, bin_font_size=8, base_font_size=8
-        )                  
-
+        try:        
+            self.draw_log_bars_cover_text_with_bins(
+                canvas, values,
+                x=canvas_x, y=canvas_y, width=lane_width,
+                tag=f"{position}_bars_{lane}",
+                number_of_bars=16,
+                gap=0,
+                vpad=0,
+                clear=True,
+                show_bins=True,
+                bar_h=13, bin_font_size=8, base_font_size=8
+            )                  
+        except:
+            logger.exception("error drawing bar graphs")
         
-    def convert_lane_data(self,port, lane, raw):
+    def convert_lane_data(self,sn, fw, port, lane, raw, FEC_tail, duration):
         lane_d = {}
+        lane_d["SN"] = sn
+        lane_d["FW version"] = fw
+        lane_d["lane"] = lane
         lane_d["port"] = port
         lane_d["lane"] = lane
         et = (int(port) - 1) * 8 + int(lane) -1
         lane_d["Ethernet"] = str(et)
         lane_d["tp0"] = raw["tp0"]
-        lane_d["tp1 host ber"] = raw["host_media_ber"][0]
-        lane_d["tp3 media ber"] = raw["host_media_ber"][1]
+        host_media_ber = raw["host_media_ber"].split(";")
+        #lane_d["tp1 host ber"] = host_media_ber[0]
+        #lane_d["tp3 media ber"] = host_media_ber[1]
+        host_ber = format_float_or_exponent(host_media_ber[0]) #f"{float(host_media_ber[0]):4e}"
+        media_ber = format_float_or_exponent(host_media_ber[1]) # f"{float(host_media_ber[1]):.4e}"
+        lane_d["tp1 host ber"] = host_ber
+        lane_d["tp3 media ber"] = media_ber
         lane_d["tp2 TX power dBm"] = raw["tp2_TXPwr"]
         lane_d["tp3 RX power dBm"] = raw["tp3_RXPwr"]
         lane_d["tp4"] = raw["tp4"]
         tp5_0 = raw["tp5_0"].split(";")
         lane_d["tp5 pre FEC ber"] = tp5_0[0]
         lane_d["tp5 post FEC ber"] = tp5_0[1]
-        lane_d["FEC Tail"] = raw["tp5_1"]
+        # lane_d["FEC Tail"] = raw["tp5_1"]
+        # tail = ""
+        # for lane in range(7):
+            # tail += f"{FEC_tail[lane]},"
+        # tail += f"{FEC_tail[7]}"
+        # lane_d["Computed FEC Tail"] = tail
+        for i in range(16):
+            lane_d[f"FEC_tail_{i}"] = raw["tp5_1"][i]
+        for i in range(16):
+            lane_d[f"Computed_FEC_tail_{i}"] = FEC_tail[i]
+        
+        lane_d["FEC time(s)"] = duration
         return lane_d
 
-    def save_lane_data_to_csv(self,port, lane, raw, filename="lane_log.csv", timestamp = None):
-        data = self.convert_lane_data(port, lane, raw)
+    def save_lane_data_to_csv(self, sn, fw, port, lane, raw, FEC_tail, duration, filename="lane_log.csv", timestamp = None):
+        data = self.convert_lane_data(sn, fw, port, lane, raw, FEC_tail, duration)
 
         # Flatten lists (convert to string)
         for key, value in data.items():
