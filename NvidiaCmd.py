@@ -486,7 +486,7 @@ class SW_CMD:
             logger.info(f'total time = {dt} seconds')
         return d
 
-    def Get_one_lane(self, port:int, lane:int):
+    def Get_one_lane(self, port:int, lane:int): # lane = 1-9
         CMD = self
         list_item=['tp5_0', 'tp5_1', 'tp3_RXPwr', 'tp2_TXPwr', 'tp4']
         d = {}
@@ -504,7 +504,7 @@ class SW_CMD:
         dt = time.time()-st
         st = time.time()
         print(f'host media time = {dt} seconds')
-        ethernet = (port - 1)*8
+        ethernet = (port - 1) * 8 + lane - 1
         d[lane]['tp3_RXPwr'] = r0[0][lane-1]
         d[lane]['tp2_TXPwr'] = r0[1][lane-1]
         if r1['result']:
