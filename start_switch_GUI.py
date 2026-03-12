@@ -313,6 +313,9 @@ class SwitchEquipmentGUI:
         self.port_fw = [None, None]
         self.check_info_done = [None]*4
         self.check_port_info()
+        self.reading_port_info = 0
+        self.check_reading_port_info()
+        self.port_read_blink_state = False
         self.FEC_tail_0 = {"top":{}, "bottom":{}}
         self.FEC_tail = {"top":{}, "bottom":{}}
         self.FEC_tail_start_time = {"top":None, "bottom":None}
@@ -356,35 +359,11 @@ class SwitchEquipmentGUI:
                 if self.switch_ready:
                     #self.update_switch_message()
                     self.check_blocking_other_button()
-                self.root.after(1000, self._schedule_check)  # run every 1000 ms
+                self.root.after(1200, self._schedule_check)  # run every 1000 ms
                 #logger.info(f"checking if port {read_port} being read")
                 #
         #    except:
         #        logger.exception("error setup periodic harware check")
-
-    # def _schedule_check(self):
-        # #    try:
-                # read_port = "None"
-                # if self.section_being_read == "top":
-                    # read_port = (self.top_port_var.get() or "").strip()
-                    # self.port_status_label.config(text=f"port read = {read_port}",font=self.bold_header_font)
-                    # self.start_blink()
-                # elif self.section_being_read == "bottom":
-                    # read_port = (self.bottom_port_var.get() or "").strip()
-                    # self.port_status_label.config(text=f"port read = {read_port}",font=self.bold_header_font)
-                    # self.start_blink()
-                # else:
-                    # self.port_status_label.config(text="port read = None",font=self.bold_header_font)
-                    # self.stop_blink()
-                # if self.switch_ready:
-                    # self.update_switch_message()
-                    # self.check_blocking_other_button()
-                # self.root.after(1000, self._schedule_check)  # run every 1000 ms
-                # #logger.info(f"checking if port {read_port} being read")
-                # #
-        # #    except:
-        # #        logger.exception("error setup periodic harware check")
-        
 
     def format_FEC_time(self, num):
         if num < 60:
@@ -441,7 +420,29 @@ class SwitchEquipmentGUI:
             if b:
                 logger.info(f"self.check_info_done {self.check_info_done}")
                 return
-        self.root.after(300, self.check_port_info)  # run every 1000 ms
+        self.root.after(100, self.check_port_info)  # run every 100 ms
+
+
+    def check_reading_port_info(self):
+        logger.info(f"check reading port info switch ready = {self.switch_ready}")
+        #if self.switch_ready:
+        logger.info(f"check reading port info {self.reading_port_info}")
+        logger.info(f"check reading port info harware state = {self.hardware_state}")
+        if self.reading_port_info > 0 and self.reading_port_info <= 2:
+             # toggle bootstyle for visible blinking
+            self.port_read_blink_state = not self.port_read_blink_state
+            if self.port_read_blink_state:
+                # bright attention color
+                #self.label.configure(bootstyle="danger")
+                self.status_label.config(text=self.hardware_state,font=self.bold_header_font,bootstyle="danger")
+            else:
+                # less aggressive color while still visible
+                #self.label.configure(bootstyle="info")
+                self.status_label.config(text=self.hardware_state,font=self.bold_header_font,bootstyle="info")
+        if self.reading_port_info >= 3:
+            self.status_label.config(text=self.hardware_state,font=self.bold_header_font,bootstyle="dark")
+            return
+        self.root.after(1000, self.check_reading_port_info)  # run every 1000 ms
         
     def check_blocking_other_button(self):
         #try:
@@ -509,43 +510,49 @@ class SwitchEquipmentGUI:
         logger.info("ports selected, ready to update")
         logger.info(f'self.switch_ready = {self.switch_ready}')
         logger.info(f'self.connect_done = {self.connect_done}')
-        if SWITCH_TYPE == "NVIDIA":
-            self.hardware_state = "reading top port info"
-        else:
-            self.hardware_state = "reading top port info and first FEC histogram"
+        self.switch_ready = True
+        self.reading_port_info = 1
         portS = (self.top_port_var.get() or "").strip()
-        port = int(portS)    
+        top_port = int(portS)    
+        portS = (self.bottom_port_var.get() or "").strip()
+        bottom_port = int(portS)
+        port = top_port
         if port:                            
+            self.hardware_state = f"reading port {port} info"
             r = self.switch.CMD.GetPortInfo(port)
             if r[0]:
                 self.port_sn[0] = r[1]["sn"]
                 self.port_fw[0] = r[1]["fw"]
+        port = bottom_port
+        if port:                            
+            self.hardware_state = f"reading port {port} info"
+            r = self.switch.CMD.GetPortInfo(port)
+            if r[0]:
+                self.port_sn[1] = r[1]["sn"]           
+                self.port_fw[1] = r[1]["fw"]
+        port = top_port
+        if port:                            
             self.FEC_tail_start_time["top"] = time.time()
             for lane in range(8):
                 if SWITCH_TYPE == "NVIDIA":
                     self.FEC_tail_0["top"][lane] = [0] * 16
                 else:
+                    self.reading_port_info = 1
                     ethernet = (port -1) * 8 + lane
+                    self.hardware_state = f"reading port {port} residual FEC histograms"
                     self.FEC_tail_0["top"][lane] = self.switch.CMD.GetFECHistogram(ethernet)
-        if SWITCH_TYPE == "NVIDIA":
-            self.hardware_state = "reading bottom port info"
-        else:
-            self.hardware_state = "reading bottom port info and first FEC histogram"
-        portS = (self.bottom_port_var.get() or "").strip()
-        port = int(portS)    
+        port = bottom_port
         if port:                            
-            r = self.switch.CMD.GetPortInfo(port)
-            if r[0]:
-                self.port_sn[1] = r[1]["sn"]           
-                self.port_fw[1] = r[1]["fw"]
             self.FEC_tail_start_time["bottom"] = time.time()
             for lane in range(8):
                 if SWITCH_TYPE == "NVIDIA":
                     self.FEC_tail_0["bottom"][lane] = [0] * 16
                 else:
+                    self.reading_port_info = 2
                     ethernet = (port -1) * 8 + lane
+                    self.hardware_state = f"reading port {port} residual FEC histograms"
                     self.FEC_tail_0["bottom"][lane] = self.switch.CMD.GetFECHistogram(ethernet)
-        self.switch_ready = True
+        self.reading_port_info = 3
         self.hardware_state = "switch ready"
         logger.info("done waiting for port, ready to read switch")
         while not self._stop_hw_reader.is_set():
@@ -595,29 +602,29 @@ class SwitchEquipmentGUI:
                             with self._refresh_lock:
                                 self.data_list[section] = section_values
                                 self.new_data_available[section] = True
-                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            self.FEC_tail_duration[section] =  time.time() - self.FEC_tail_start_time[section]
-                            if self.log_data:
-                                for lane in range(8):
-                                    lane_data = self.data_list[section][lane+1]
-                                    logger.info(f"lane_data for lane {lane}")
-                                    logger.info(lane_data)
-                                    logger.info(f"lane_data['tp5_1']")
-                                    logger.info(lane_data['tp5_1'])
-                                    if not SWITCH_TYPE == "NVIDIA":
-                                        logger.info("Process Arista")
-                                        self.compute_tail(section, lane, lane_data['tp5_1'])
-                                    else:
-                                        logger.info("Process NVIDIA")
-                                        self.FEC_tail[section][lane] = lane_data['tp5_1']
-                                    logger.info(f"self.FEC_tail_0[section][lane]")
-                                    logger.info(self.FEC_tail_0[section][lane])
-                                    logger.info(f"self.FEC_tail[section][lane]")
-                                    logger.info(self.FEC_tail[section][lane])
-                                    try:
-                                        self.save_lane_data_to_csv(sn, fw, port, lane+1, lane_data, self.FEC_tail[section][lane], self.FEC_tail_duration[section],self.data_log_file, timestamp)
-                                    except:
-                                        logger.exception("Failed to save_lane_data_to_csv = %r", lane_data)
+                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                self.FEC_tail_duration[section] =  time.time() - self.FEC_tail_start_time[section]
+                                if self.log_data:
+                                    for lane in range(8):
+                                        lane_data = self.data_list[section][lane+1]
+                                        logger.info(f"lane_data for lane {lane}")
+                                        logger.info(lane_data)
+                                        logger.info(f"lane_data['tp5_1']")
+                                        logger.info(lane_data['tp5_1'])
+                                        if not SWITCH_TYPE == "NVIDIA":
+                                            logger.info("Process Arista")
+                                            self.compute_tail(section, lane, lane_data['tp5_1'])
+                                        else:
+                                            logger.info("Process NVIDIA")
+                                            self.FEC_tail[section][lane] = lane_data['tp5_1']
+                                        logger.info(f"self.FEC_tail_0[section][lane]")
+                                        logger.info(self.FEC_tail_0[section][lane])
+                                        logger.info(f"self.FEC_tail[section][lane]")
+                                        logger.info(self.FEC_tail[section][lane])
+                                        try:
+                                            self.save_lane_data_to_csv(sn, fw, port, lane+1, lane_data, self.FEC_tail[section][lane], self.FEC_tail_duration[section],self.data_log_file, timestamp)
+                                        except:
+                                            logger.exception("Failed to save_lane_data_to_csv = %r", lane_data)
                             self.hardware_state = "switch ready"
                         self.update_data_once[section] = False
                     # If auto-refresh is on, refresh this section immediately.
@@ -958,14 +965,20 @@ class SwitchEquipmentGUI:
  
     def update_switch_message(self):
         self.log_data = True
-        if self.hardware_state.find("reading ") >= 0:
-            self.status_label.config(text=self.hardware_state,font=self.bold_header_font)
-        if not self.hardware_state == "switch ready":
-            self.status_label.config(text=self.hardware_state,font=self.bold_header_font)
-        elif len(self.section_being_read) == 0:
+        if self.reading_port_info >= 3:
+            if self.hardware_state.find("reading ") >= 0:
+                self.status_label.config(text=self.hardware_state,font=self.bold_header_font, bootstyle="danger")
+            if not self.hardware_state == "switch ready":
+                self.status_label.config(text=self.hardware_state,font=self.bold_header_font, bootstyle="info")
+        if self.reading_port_info == 0 or self.reading_port_info >= 3:
+            if len(self.section_being_read) == 0:
+                message = "switch is ready"
+                self.status_label.config(text=message,font=self.bold_header_font, bootstyle="dark")
+        #else:
+        #    self.status_label.config(text=self.hardware_state,font=self.bold_header_font, bootstyle="dark")
+        if self.hardware_state == "switch ready" and len(self.section_being_read) == 0:
             message = "switch is ready"
             self.status_label.config(text=message,font=self.bold_header_font)       
-
         if self.switch_ready:
             if self.update_forever:
                 # message = "auto refresh  = ON"
@@ -1854,16 +1867,10 @@ class SwitchEquipmentGUI:
         tp5_0 = raw["tp5_0"].split(";")
         lane_d["tp5 pre FEC ber"] = tp5_0[0]
         lane_d["tp5 post FEC ber"] = tp5_0[1]
-        # lane_d["FEC Tail"] = raw["tp5_1"]
-        # tail = ""
-        # for lane in range(7):
-            # tail += f"{FEC_tail[lane]},"
-        # tail += f"{FEC_tail[7]}"
-        # lane_d["Computed FEC Tail"] = tail
         for i in range(16):
-            lane_d[f"FEC_tail_{i}"] = raw["tp5_1"][i]
+            lane_d[f"FEC_tail_bin{i}"] = raw["tp5_1"][i]
         for i in range(16):
-            lane_d[f"Computed_FEC_tail_{i}"] = FEC_tail[i]
+            lane_d[f"Computed_FEC_tail_bin{i}"] = FEC_tail[i]
         
         lane_d["FEC time(s)"] = duration
         return lane_d
